@@ -1,36 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Fermion WebRTC Project
+
+A WebRTC-based video streaming solution built with MediaSoup, Express, and Socket.IO.
+
+## Features
+
+- **Real-time Video Streaming**: Built on WebRTC for low-latency video delivery
+- **MediaSoup Integration**: Uses MediaSoup as Selective Forwarding Unit (SFU)
+- **Scalable Architecture**: Supports multiple producers and consumers
+- **Robust Media Codecs**: Audio (Opus) and Video (VP8) support
+- **Reliable Transport**: Both UDP and TCP fallback support
+
+## Technical Stack
+
+### Backend
+- Express.js
+- MediaSoup (WebRTC SFU)
+- Socket.IO
+- TypeScript
+
+## Server Configuration
+
+### Media Codecs
+- **Audio**: Opus (48kHz, 2 channels)
+- **Video**: VP8 with NACK and FIR support
+- **Bitrate**: Configurable starting at 1000kbps
+
+### Network Settings
+- **Port Range**: 2000-2020 (WebRTC)
+- **Server Port**: 4000
+- **Transport**: UDP (preferred) with TCP fallback
+- **CORS**: Enabled for all origins
+
+## Architecture
+
+### Core Components
+
+1. **MediaSoup Worker**
+   - Handles media routing
+   - Automatic recovery on crashes
+   - Process monitoring
+
+2. **WebRTC Transport**
+   - Separate producer and consumer transports
+   - DTLS state management
+   - ICE candidate handling
+
+3. **Media Handling**
+   - Producer management
+   - Consumer management
+   - Stream synchronization
 
 ## Getting Started
 
-First, run the development server:
-
+1. Install dependencies:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Start the server:
+```bash
+npm run dev
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. Server will be running at `http://localhost:4000`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## API Reference
 
-## Learn More
+### Socket.IO Events
 
-To learn more about Next.js, take a look at the following resources:
+| Event | Description |
+|-------|-------------|
+| `connection` | Initial peer connection |
+| `getRouterRtpCapabilities` | Get router capabilities |
+| `createTransport` | Create WebRTC transport |
+| `connectProducerTransport` | Connect producer |
+| `transport-produce` | Start media production |
+| `connectConsumerTransport` | Connect consumer |
+| `consumeMedia` | Start media consumption |
+| `resumePausedConsumer` | Resume paused streams |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Development
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Requirements
+- Node.js 16+
+- npm or yarn
+- TypeScript understanding
+- WebRTC knowledge
 
-## Deploy on Vercel
+## Contributing
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Fork the repository
+2. Create feature branch
+3. Commit changes
+4. Push to branch
+5. Create Pull Request
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## License
+
+MIT License
+
+---
+
+For detailed API documentation or contribution guidelines, please refer to the docs directory.
