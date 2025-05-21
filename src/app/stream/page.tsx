@@ -9,6 +9,7 @@ interface StreamState {
   isMicOn: boolean;
   isCameraOn: boolean;
   error: string | null;
+  streams: Map<string, MediaStream>;
 }
 
 export default function StreamPage() {
@@ -16,143 +17,162 @@ export default function StreamPage() {
     isStreaming: false,
     isMicOn: false,
     isCameraOn: false,
-    error: null
-  })
-  const [peers, setPeers] = useState<string[]>([])
-  const localVideoRef = useRef<HTMLVideoElement>(null)
-  const remoteVideoRef = useRef<HTMLVideoElement>(null)
-  const webrtcServiceRef = useRef<WebRTCService>(null)
-  const streamRef = useRef<MediaStream>(null)
+    error: null,
+    streams: new Map()
+  });
+  
+  const [peers, setPeers] = useState<string[]>([]);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideosRef = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const webrtcServiceRef = useRef<WebRTCService | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     try {
-      webrtcServiceRef.current = new WebRTCService()
+      webrtcServiceRef.current = new WebRTCService("streamer");
       
       webrtcServiceRef.current.onPeerJoined((peerId) => {
-        setPeers(prev => [...prev, peerId])
-      })
+        setPeers(prev => [...prev, peerId]);
+      });
 
       webrtcServiceRef.current.onPeerLeft((peerId) => {
-        setPeers(prev => prev.filter(id => id !== peerId))
-      })
+        setPeers(prev => prev.filter(id => id !== peerId));
+        setState(prev => {
+          const newStreams = new Map(prev.streams);
+          newStreams.delete(peerId);
+          return { ...prev, streams: newStreams };
+        });
+      });
 
-      webrtcServiceRef.current.onRemoteStream((stream) => {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = stream
-        }
-      })
+      webrtcServiceRef.current.onRemoteStream((stream, peerId, kind) => {
+        setState(prev => {
+          const newStreams = new Map(prev.streams);
+          if (!newStreams.has(peerId)) {
+            newStreams.set(peerId, new MediaStream());
+          }
+          const existingStream = newStreams.get(peerId)!;
+          
+          existingStream.getTracks()
+            .filter(track => track.kind === kind)
+            .forEach(track => existingStream.removeTrack(track));
+          
+          stream.getTracks().forEach(track => existingStream.addTrack(track));
+          
+          return { ...prev, streams: newStreams };
+        });
+      });
 
       webrtcServiceRef.current.onError((error) => {
-        setState(prev => ({ ...prev, error: error.message }))
-        console.error('WebRTC error:', error)
-      })
+        setState(prev => ({ ...prev, error: error.message }));
+        console.error('WebRTC error:', error);
+      });
 
       return () => {
-        stopStream()
-        webrtcServiceRef.current?.disconnect()
-      }
+        stopStream();
+        webrtcServiceRef.current?.disconnect();
+      };
     } catch (error) {
-      console.error('Failed to initialize WebRTC service:', error)
-      setState(prev => ({ ...prev, error: 'Failed to initialize video chat' }))
+      console.error('Failed to initialize WebRTC service:', error);
+      setState(prev => ({ ...prev, error: 'Failed to initialize video chat' }));
     }
-  }, [])
+  }, []);
 
   const startStream = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true
-      })
+      });
 
-      streamRef.current = stream
+      streamRef.current = stream;
 
       if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream
+        localVideoRef.current.srcObject = stream;
         setState(prev => ({
           ...prev,
           isStreaming: true,
           isMicOn: true,
           isCameraOn: true,
           error: null
-        }))
+        }));
 
-        await webrtcServiceRef.current?.startStreaming(stream)
+        await webrtcServiceRef.current?.startStreaming(stream);
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to access media devices'
-      console.error('Media error:', error)
-      setState(prev => ({ ...prev, error: errorMessage }))
+      const errorMessage = error instanceof Error ? error.message : 'Failed to access media devices';
+      console.error('Media error:', error);
+      setState(prev => ({ ...prev, error: errorMessage }));
     }
-  }
+  };
 
   const toggleMic = () => {
     try {
       if (streamRef.current) {
-        const audioTracks = streamRef.current.getAudioTracks()
-        const newState = !state.isMicOn
+        const audioTracks = streamRef.current.getAudioTracks();
+        const newState = !state.isMicOn;
         
         audioTracks.forEach(track => {
-          track.enabled = newState
-        })
+          track.enabled = newState;
+        });
         
-        setState(prev => ({ ...prev, isMicOn: newState }))
-        webrtcServiceRef.current?.updateAudioState(newState)
+        setState(prev => ({ ...prev, isMicOn: newState }));
+        webrtcServiceRef.current?.updateAudioState(newState);
       }
     } catch (error) {
-      console.error('Failed to toggle microphone:', error)
-      setState(prev => ({ ...prev, error: 'Failed to toggle microphone' }))
+      console.error('Failed to toggle microphone:', error);
+      setState(prev => ({ ...prev, error: 'Failed to toggle microphone' }));
     }
-  }
+  };
 
   const toggleCamera = () => {
     try {
       if (streamRef.current) {
-        const videoTracks = streamRef.current.getVideoTracks()
-        const newState = !state.isCameraOn
+        const videoTracks = streamRef.current.getVideoTracks();
+        const newState = !state.isCameraOn;
         
         videoTracks.forEach(track => {
-          track.enabled = newState
-        })
+          track.enabled = newState;
+        });
         
-        setState(prev => ({ ...prev, isCameraOn: newState }))
-        webrtcServiceRef.current?.updateVideoState(newState)
+        setState(prev => ({ ...prev, isCameraOn: newState }));
+        webrtcServiceRef.current?.updateVideoState(newState);
       }
     } catch (error) {
-      console.error('Failed to toggle camera:', error)
-      setState(prev => ({ ...prev, error: 'Failed to toggle camera' }))
+      console.error('Failed to toggle camera:', error);
+      setState(prev => ({ ...prev, error: 'Failed to toggle camera' }));
     }
-  }
+  };
 
   const stopStream = () => {
     try {
       if (streamRef.current) {
-        const tracks = streamRef.current.getTracks()
-        tracks.forEach(track => track.stop())
-        streamRef.current = undefined
+        const tracks = streamRef.current.getTracks();
+        tracks.forEach(track => track.stop());
+        streamRef.current = null;
         
         if (localVideoRef.current) {
-          localVideoRef.current.srcObject = null
-        }
-        
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = null
+          localVideoRef.current.srcObject = null;
         }
 
-        setState(prev => ({
-          ...prev,
-          isStreaming: false,
-          isMicOn: false,
-          isCameraOn: false,
-          error: null
-        }))
+        setState(prev => {
+          const newState = {
+            ...prev,
+            isStreaming: false,
+            isMicOn: false,
+            isCameraOn: false,
+            error: null,
+            streams: new Map()
+          };
+          return newState;
+        });
         
-        webrtcServiceRef.current?.stopStreaming()
+        webrtcServiceRef.current?.stopStreaming();
       }
     } catch (error) {
-      console.error('Failed to stop stream:', error)
-      setState(prev => ({ ...prev, error: 'Failed to stop stream' }))
+      console.error('Failed to stop stream:', error);
+      setState(prev => ({ ...prev, error: 'Failed to stop stream' }));
     }
-  }
+  };
 
   return (
     <div className={styles.container}>
@@ -199,20 +219,25 @@ export default function StreamPage() {
             )}
           </div>
         </div>
-        <div className={styles.videoContainer}>
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            className={styles.video}
-          />
-          {peers.length > 0 && (
+        {Array.from(state.streams.entries()).map(([peerId, stream]) => (
+          <div key={peerId} className={styles.videoContainer}>
+            <video
+              ref={el => {
+                if (el) {
+                  remoteVideosRef.current.set(peerId, el);
+                  el.srcObject = stream;
+                }
+              }}
+              autoPlay
+              playsInline
+              className={styles.video}
+            />
             <div className={styles.peerInfo}>
-              Connected Peers: {peers.length}
+              Peer: {peerId}
             </div>
-          )}
-        </div>
+          </div>
+        ))}
       </div>
     </div>
-  )
+  );
 }
