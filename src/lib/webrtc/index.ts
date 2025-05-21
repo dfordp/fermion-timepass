@@ -245,7 +245,7 @@ export class WebRTCService {
     });
   }
 
-  private async connectConsumer(streamerId: string, transport: mediasoupClient.Transport) {
+    private async connectConsumer(streamerId: string, transport: mediasoupClient.Transport) {
     this.socket.emit(
       'consume',
       {
@@ -257,30 +257,35 @@ export class WebRTCService {
           this.handleError(new Error(data.error));
           return;
         }
-
+  
         try {
           const consumer = await transport.consume({
             id: data.id,
             producerId: data.producerId,
             kind: data.kind,
-            rtpParameters: data.rtpParameters
+            rtpParameters: data.rtpParameters,
+            appData: { peerId: streamerId }  // Add peerId to consumer metadata
           });
-
+  
           this.consumers.set(consumer.id, consumer);
           const stream = new MediaStream([consumer.track]);
           
           if (this.remoteStreamCallback) {
-            this.remoteStreamCallback(stream);
+            this.remoteStreamCallback(stream, streamerId, consumer.kind);
           }
-
+  
           this.socket.emit('resumeConsumer', { consumerId: consumer.id });
-
+  
           consumer.on('transportclose', () => {
             this.consumers.delete(consumer.id);
           });
-
+  
           consumer.on('producerclose', () => {
             this.consumers.delete(consumer.id);
+            if (this.remoteStreamCallback) {
+              // Notify that the producer was closed
+              this.remoteStreamCallback(new MediaStream(), streamerId, consumer.kind);
+            }
           });
         } catch (error) {
           this.handleError(error as Error);

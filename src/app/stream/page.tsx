@@ -1,243 +1,158 @@
-'use client'
+"use client";
 
-import { useEffect, useRef, useState } from 'react'
-import styles from './steam.module.css'
-import { WebRTCService } from '@/lib/webrtc'
+import { useEffect, useRef, useState } from "react";
+import { io } from "socket.io-client";
+import { Device } from "mediasoup-client";
+import {
+  DtlsParameters,
+  IceCandidate,
+  IceParameters,
+  Transport,
+} from "mediasoup-client/lib/types";
 
-interface StreamState {
-  isStreaming: boolean;
-  isMicOn: boolean;
-  isCameraOn: boolean;
-  error: string | null;
-  streams: Map<string, MediaStream>;
-}
+export default function Home() {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
-export default function StreamPage() {
-  const [state, setState] = useState<StreamState>({
-    isStreaming: false,
-    isMicOn: false,
-    isCameraOn: false,
-    error: null,
-    streams: new Map()
+  const [params, setParams] = useState({
+    encoding: [
+      { rid: "r0", maxBitrate: 100000, scalabilityMode: "S1T3" },
+      { rid: "r1", maxBitrate: 300000, scalabilityMode: "S1T3" },
+      { rid: "r2", maxBitrate: 900000, scalabilityMode: "S1T3" },
+    ],
+    codecOptions: { videoGoogleStartBitrate: 1000 },
   });
-  
-  const [peers, setPeers] = useState<string[]>([]);
-  const localVideoRef = useRef<HTMLVideoElement>(null);
-  const remoteVideosRef = useRef<Map<string, HTMLVideoElement>>(new Map());
-  const webrtcServiceRef = useRef<WebRTCService | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+
+  const [device, setDevice] = useState<Device | null>(null);
+  const [socket, setSocket] = useState<any>(null);
+  const [rtpCapabilities, setRtpCapabilities] = useState<any>(null);
+  const [producerTransport, setProducerTransport] = useState<Transport | null>(null);
+  const [consumerTransport, setConsumerTransport] = useState<any>(null);
 
   useEffect(() => {
-    try {
-      webrtcServiceRef.current = new WebRTCService("streamer");
-      
-      webrtcServiceRef.current.onPeerJoined((peerId) => {
-        setPeers(prev => [...prev, peerId]);
-      });
+    const socket = io("http://localhost:4000/mediasoup");
 
-      webrtcServiceRef.current.onPeerLeft((peerId) => {
-        setPeers(prev => prev.filter(id => id !== peerId));
-        setState(prev => {
-          const newStreams = new Map(prev.streams);
-          newStreams.delete(peerId);
-          return { ...prev, streams: newStreams };
-        });
-      });
-
-      webrtcServiceRef.current.onRemoteStream((stream, peerId, kind) => {
-        setState(prev => {
-          const newStreams = new Map(prev.streams);
-          if (!newStreams.has(peerId)) {
-            newStreams.set(peerId, new MediaStream());
-          }
-          const existingStream = newStreams.get(peerId)!;
-          
-          existingStream.getTracks()
-            .filter(track => track.kind === kind)
-            .forEach(track => existingStream.removeTrack(track));
-          
-          stream.getTracks().forEach(track => existingStream.addTrack(track));
-          
-          return { ...prev, streams: newStreams };
-        });
-      });
-
-      webrtcServiceRef.current.onError((error) => {
-        setState(prev => ({ ...prev, error: error.message }));
-        console.error('WebRTC error:', error);
-      });
-
-      return () => {
-        stopStream();
-        webrtcServiceRef.current?.disconnect();
-      };
-    } catch (error) {
-      console.error('Failed to initialize WebRTC service:', error);
-      setState(prev => ({ ...prev, error: 'Failed to initialize video chat' }));
-    }
+    setSocket(socket);
+    socket.on("connection-success", (data) => {
+      startCamera();
+    });
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
-  const startStream = async () => {
+  const startCamera = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true
-      });
-
-      streamRef.current = stream;
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-        setState(prev => ({
-          ...prev,
-          isStreaming: true,
-          isMicOn: true,
-          isCameraOn: true,
-          error: null
-        }));
-
-        await webrtcServiceRef.current?.startStreaming(stream);
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      if (videoRef.current) {
+        const track = stream.getVideoTracks()[0];
+        videoRef.current.srcObject = stream;
+        setParams((current) => ({ ...current, track }));
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to access media devices';
-      console.error('Media error:', error);
-      setState(prev => ({ ...prev, error: errorMessage }));
+      console.error("Error accessing camera:", error);
     }
   };
 
-  const toggleMic = () => {
+  const getRouterRtpCapabilities = async () => {
+    socket.emit("getRouterRtpCapabilities", (data: any) => {
+      setRtpCapabilities(data.routerRtpCapabilities);
+      console.log(`getRouterRtpCapabilities: ${data.routerRtpCapabilities}`);
+    });
+  };
+
+  const createDevice = async () => {
     try {
-      if (streamRef.current) {
-        const audioTracks = streamRef.current.getAudioTracks();
-        const newState = !state.isMicOn;
-        
-        audioTracks.forEach(track => {
-          track.enabled = newState;
-        });
-        
-        setState(prev => ({ ...prev, isMicOn: newState }));
-        webrtcServiceRef.current?.updateAudioState(newState);
+      const newDevice = new Device();
+      await newDevice.load({ routerRtpCapabilities: rtpCapabilities });
+      setDevice(newDevice);
+    } catch (error: any) {
+      console.log(error);
+      if (error.name === "UnsupportedError") {
+        console.error("Browser not supported");
       }
-    } catch (error) {
-      console.error('Failed to toggle microphone:', error);
-      setState(prev => ({ ...prev, error: 'Failed to toggle microphone' }));
     }
   };
 
-  const toggleCamera = () => {
-    try {
-      if (streamRef.current) {
-        const videoTracks = streamRef.current.getVideoTracks();
-        const newState = !state.isCameraOn;
-        
-        videoTracks.forEach(track => {
-          track.enabled = newState;
-        });
-        
-        setState(prev => ({ ...prev, isCameraOn: newState }));
-        webrtcServiceRef.current?.updateVideoState(newState);
-      }
-    } catch (error) {
-      console.error('Failed to toggle camera:', error);
-      setState(prev => ({ ...prev, error: 'Failed to toggle camera' }));
-    }
-  };
-
-  const stopStream = () => {
-    try {
-      if (streamRef.current) {
-        const tracks = streamRef.current.getTracks();
-        tracks.forEach(track => track.stop());
-        streamRef.current = null;
-        
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = null;
+  const createSendTransport = async () => {
+    socket.emit(
+      "createTransport",
+      { sender: true },
+      ({
+        params,
+      }: {
+        params: {
+          id: string;
+          iceParameters: IceParameters;
+          iceCandidates: IceCandidate[];
+          dtlsParameters: DtlsParameters;
+          error?: unknown;
+        };
+      }) => {
+        if (params.error) {
+          console.log(params.error);
+          return;
         }
 
-        setState(prev => {
-          const newState = {
-            ...prev,
-            isStreaming: false,
-            isMicOn: false,
-            isCameraOn: false,
-            error: null,
-            streams: new Map()
-          };
-          return newState;
-        });
-        
-        webrtcServiceRef.current?.stopStreaming();
+        let transport = device?.createSendTransport(params);
+        setProducerTransport(transport || null);
+
+        transport?.on(
+          "connect",
+          async ({ dtlsParameters }: any, callback: any, errback: any) => {
+            try {
+              console.log("----------> producer transport has connected");
+              socket.emit("connectProducerTransport", { dtlsParameters });
+              callback();
+            } catch (error) {
+              errback(error);
+            }
+          }
+        );
+
+        transport?.on(
+          "produce",
+          async (parameters: any, callback: any, errback: any) => {
+            const { kind, rtpParameters } = parameters;
+            console.log("----------> transport-produce");
+            try {
+              socket.emit(
+                "transport-produce",
+                { kind, rtpParameters },
+                ({ id }: any) => {
+                  callback({ id });
+                }
+              );
+            } catch (error) {
+              errback(error);
+            }
+          }
+        );
       }
-    } catch (error) {
-      console.error('Failed to stop stream:', error);
-      setState(prev => ({ ...prev, error: 'Failed to stop stream' }));
-    }
+    );
+  };
+
+  const connectSendTransport = async () => {
+    let localProducer = await producerTransport?.produce(params);
+
+    localProducer?.on("trackended", () => {
+      console.log("trackended");
+    });
+    localProducer?.on("transportclose", () => {
+      console.log("transportclose");
+    });
   };
 
   return (
-    <div className={styles.container}>
-      {state.error && (
-        <div className={styles.error}>
-          {state.error}
-        </div>
-      )}
-      <div className={styles.videoGrid}>
-        <div className={styles.videoContainer}>
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            className={styles.video}
-          />
-          <div className={styles.controls}>
-            {!state.isStreaming ? (
-              <button 
-                onClick={startStream}
-                disabled={!!state.error}
-              >
-                Start Stream
-              </button>
-            ) : (
-              <>
-                <button 
-                  onClick={toggleMic}
-                  disabled={!!state.error}
-                >
-                  {state.isMicOn ? 'Mute' : 'Unmute'}
-                </button>
-                <button 
-                  onClick={toggleCamera}
-                  disabled={!!state.error}
-                >
-                  {state.isCameraOn ? 'Stop Camera' : 'Start Camera'}
-                </button>
-                <button onClick={stopStream}>
-                  End Stream
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-        {Array.from(state.streams.entries()).map(([peerId, stream]) => (
-          <div key={peerId} className={styles.videoContainer}>
-            <video
-              ref={el => {
-                if (el) {
-                  remoteVideosRef.current.set(peerId, el);
-                  el.srcObject = stream;
-                }
-              }}
-              autoPlay
-              playsInline
-              className={styles.video}
-            />
-            <div className={styles.peerInfo}>
-              Peer: {peerId}
-            </div>
-          </div>
-        ))}
+    <main>
+      <video ref={videoRef} id="localvideo" autoPlay playsInline />
+      <video ref={remoteVideoRef} id="remotevideo" autoPlay playsInline />
+      <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+        <button onClick={getRouterRtpCapabilities}>Get Router RTP Capabilities</button>
+        <button onClick={createDevice}>Create Device</button>
+        <button onClick={createSendTransport}>Create send transport</button>
+        <button onClick={connectSendTransport}>Connect send transport and produce</button>
       </div>
-    </div>
+    </main>
   );
 }
