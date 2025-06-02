@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { io } from "socket.io-client";
 import { Device } from "mediasoup-client";
 import {
@@ -10,7 +11,12 @@ import {
   Transport,
 } from "mediasoup-client/lib/types";
 
-export default function Home() {
+export default function StreamPage() {
+  const searchParams = useSearchParams();
+  const roomId = searchParams.get('roomId') || '123';
+  const username = searchParams.get('username') || 'streamer';
+  const role = searchParams.get('role') || 'streamer';
+  
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -28,18 +34,22 @@ export default function Home() {
   const [rtpCapabilities, setRtpCapabilities] = useState<any>(null);
   const [producerTransport, setProducerTransport] = useState<Transport | null>(null);
   const [consumerTransport, setConsumerTransport] = useState<any>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
 
   useEffect(() => {
     const socket = io("http://localhost:4000/mediasoup");
 
     setSocket(socket);
     socket.on("connection-success", (data) => {
+      console.log("Connected to server as streamer", data);
+      // Join room as streamer
+      socket.emit("join-room", { roomId, username, role });
       startCamera();
     });
     return () => {
       socket.disconnect();
     };
-  }, []);
+  }, [roomId, username, role]);
 
   const startCamera = async () => {
     try {
@@ -77,7 +87,7 @@ export default function Home() {
   const createSendTransport = async () => {
     socket.emit(
       "createTransport",
-      { sender: true },
+      { sender: true, roomId },
       ({
         params,
       }: {
@@ -102,7 +112,7 @@ export default function Home() {
           async ({ dtlsParameters }: any, callback: any, errback: any) => {
             try {
               console.log("----------> producer transport has connected");
-              socket.emit("connectProducerTransport", { dtlsParameters });
+              socket.emit("connectProducerTransport", { dtlsParameters, roomId });
               callback();
             } catch (error) {
               errback(error);
@@ -118,7 +128,7 @@ export default function Home() {
             try {
               socket.emit(
                 "transport-produce",
-                { kind, rtpParameters },
+                { kind, rtpParameters, roomId },
                 ({ id }: any) => {
                   callback({ id });
                 }
@@ -134,24 +144,96 @@ export default function Home() {
 
   const connectSendTransport = async () => {
     let localProducer = await producerTransport?.produce(params);
+    setIsStreaming(true);
 
     localProducer?.on("trackended", () => {
       console.log("trackended");
+      setIsStreaming(false);
     });
     localProducer?.on("transportclose", () => {
       console.log("transportclose");
+      setIsStreaming(false);
     });
   };
 
   return (
-    <main>
-      <video ref={videoRef} id="localvideo" autoPlay playsInline />
-      <video ref={remoteVideoRef} id="remotevideo" autoPlay playsInline />
-      <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-        <button onClick={getRouterRtpCapabilities}>Get Router RTP Capabilities</button>
-        <button onClick={createDevice}>Create Device</button>
-        <button onClick={createSendTransport}>Create send transport</button>
-        <button onClick={connectSendTransport}>Connect send transport and produce</button>
+    <main className="p-8">
+      <div className="mb-4">
+        <h1 className="text-2xl font-bold">Streaming to Room: {roomId}</h1>
+        <p>Connected as: {username} (Role: {role})</p>
+        <p>Status: {isStreaming ? "Streaming" : "Not streaming"}</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+          <h2 className="text-xl mb-2">Local Preview</h2>
+          <div className="bg-gray-800 rounded-lg overflow-hidden">
+            <video 
+              ref={videoRef} 
+              id="localvideo" 
+              autoPlay 
+              playsInline 
+              className="w-full h-auto"
+            />
+          </div>
+        </div>
+        
+        <div>
+          <h2 className="text-xl mb-2">Remote View</h2>
+          <div className="bg-gray-800 rounded-lg overflow-hidden">
+            <video 
+              ref={remoteVideoRef} 
+              id="remotevideo" 
+              autoPlay 
+              playsInline 
+              className="w-full h-auto"
+            />
+          </div>
+        </div>
+      </div>
+      
+      <div className="mt-6 flex flex-wrap gap-3">
+        <button 
+          onClick={getRouterRtpCapabilities}
+          className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md"
+        >
+          1. Get Router RTP Capabilities
+        </button>
+        
+        <button 
+          onClick={createDevice}
+          className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md"
+          disabled={!rtpCapabilities}
+        >
+          2. Create Device
+        </button>
+        
+        <button 
+          onClick={createSendTransport}
+          className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-md"
+          disabled={!device}
+        >
+          3. Create Send Transport
+        </button>
+        
+        <button 
+          onClick={connectSendTransport}
+          className="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded-md"
+          disabled={!producerTransport}
+        >
+          4. Start Streaming
+        </button>
+        
+        <button 
+          onClick={() => window.history.back()}
+          className="bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded-md ml-auto"
+        >
+          Back to Home
+        </button>
+      </div>
+      
+      <div className="mt-6 text-center text-sm text-gray-600 border-t pt-4">
+        <p>Server running at: <span className="font-mono">https://localhost:3000</span></p>
       </div>
     </main>
   );

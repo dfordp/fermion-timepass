@@ -22,7 +22,7 @@ const io = new Server(httpsServer, {
   }
 });
 
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(express.static(path.join(__dirname, '..', 'test')));
 
 // All mediasoup workers
 const workers: mediasoup.types.Worker[] = [];
@@ -33,7 +33,7 @@ const roomList = new Map<string, Room>();
 
 // Start the server
 httpsServer.listen(config.listenPort, () => {
-  console.log('Listening on https://' + config.listenIp + ':' + config.listenPort);
+  console.log('Listening on https://localhost' + ':' + config.listenPort);
   startMediasoup();
 });
 

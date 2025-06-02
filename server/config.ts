@@ -20,7 +20,7 @@ const getLocalIp = (): string => {
 
 const config = {
   listenIp: '0.0.0.0',
-  listenPort: 3016,
+  listenPort: 3000,
   sslCrt: './ssl/cert.pem',
   sslKey: './ssl/key.pem',
 
