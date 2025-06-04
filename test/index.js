@@ -12,46 +12,61 @@ let hlsPlayer = null;
 
 // Function to handle UI based on user role
 function setupUIForRole() {
+    console.log(`Setting up UI for role: ${userRole}`);
+    
     if (userRole === 'watcher') {
-        // Instead of adding classes, completely remove the buttons from the DOM
-        const elementsToRemove = [
+        // Hide all producer controls for watchers
+        const elementsToHide = [
             'startAudioButton', 'stopAudioButton',
             'startVideoButton', 'stopVideoButton',
             'startScreenButton', 'stopScreenButton',
             'devicesButton', 'devicesList'
         ];
         
-        elementsToRemove.forEach(id => {
+        elementsToHide.forEach(id => {
             const element = document.getElementById(id);
             if (element) {
-                element.style.display = 'none'; // Use inline style to hide
+                element.style.display = 'none';
             }
         });
         
-        // Create HLS player container
-        const hlsContainer = document.createElement('div');
-        hlsContainer.id = 'hlsPlayerContainer';
-        hlsContainer.className = 'hls-container';
-        
-        const hlsHeader = document.createElement('h4');
-        hlsHeader.innerHTML = '<i class="fab fa-youtube"></i> Live Stream';
-        
-        const hlsVideo = document.createElement('video');
-        hlsVideo.id = 'hlsVideo';
-        hlsVideo.className = 'vid';
-        hlsVideo.controls = true;
-        hlsVideo.autoplay = true;
-        hlsVideo.playsInline = true;
-        
-        hlsContainer.appendChild(hlsHeader);
-        hlsContainer.appendChild(hlsVideo);
-        
-        // Add the HLS container to the page
-        const videoMedia = document.getElementById('videoMedia');
-        videoMedia.insertBefore(hlsContainer, videoMedia.firstChild);
+        // Create HLS player container if it doesn't exist
+        if (!document.getElementById('hlsPlayerContainer')) {
+            const hlsContainer = document.createElement('div');
+            hlsContainer.id = 'hlsPlayerContainer';
+            hlsContainer.className = 'hls-container';
+            
+            const hlsHeader = document.createElement('h4');
+            hlsHeader.innerHTML = '<i class="fab fa-youtube"></i> Live Stream';
+            
+            const hlsVideo = document.createElement('video');
+            hlsVideo.id = 'hlsVideo';
+            hlsVideo.className = 'vid';
+            hlsVideo.controls = true;
+            hlsVideo.autoplay = true;
+            hlsVideo.playsInline = true;
+            
+            const statusDiv = document.createElement('div');
+            statusDiv.id = 'hlsStatus';
+            statusDiv.textContent = 'Waiting for stream...';
+            statusDiv.style.padding = '10px';
+            statusDiv.style.backgroundColor = '#f8f9fa';
+            statusDiv.style.borderRadius = '4px';
+            statusDiv.style.margin = '10px 0';
+            
+            hlsContainer.appendChild(hlsHeader);
+            hlsContainer.appendChild(hlsVideo);
+            hlsContainer.appendChild(statusDiv);
+            
+            // Add the HLS container to the page
+            const videoMedia = document.getElementById('videoMedia');
+            if (videoMedia) {
+                videoMedia.insertBefore(hlsContainer, videoMedia.firstChild);
+            }
+        }
         
         console.log("Watcher mode enabled - media controls hidden, HLS player added");
-    } else if (userRole === 'streamer') {
+    } else {
         console.log("Streamer mode enabled - full controls available");
     }
 }
@@ -154,39 +169,23 @@ function startHlsPlayer(hlsUrl) {
     // Check if URL is valid
     if (!hlsUrl || !hlsUrl.includes('.m3u8')) {
         console.error('Invalid HLS URL:', hlsUrl);
+        updateStatus('Invalid stream URL. Please try again later.');
         return;
     }
     
-    // Add status message
-    const statusDiv = document.createElement('div');
-    statusDiv.id = 'hlsStatus';
-    statusDiv.style.padding = '10px';
-    statusDiv.style.backgroundColor = '#f8f9fa';
-    statusDiv.style.borderRadius = '4px';
-    statusDiv.style.margin = '10px 0';
-    statusDiv.textContent = 'Connecting to stream...';
-    
-    const hlsContainer = document.getElementById('hlsPlayerContainer');
-    if (hlsContainer) {
-        const existingStatus = document.getElementById('hlsStatus');
-        if (existingStatus) {
-            existingStatus.textContent = 'Connecting to stream...';
-        } else {
-            hlsContainer.appendChild(statusDiv);
-        }
-    }
+    updateStatus('Connecting to stream...');
     
     console.log('Initializing HLS.js with URL:', hlsUrl);
     
     if (Hls.isSupported()) {
         hlsPlayer = new Hls({
-            debug: true, // Enable debug to see what's happening
+            debug: false,
             enableWorker: true,
             lowLatencyMode: true,
             backBufferLength: 90
         });
         
-        // Add event listeners for debugging
+        // Add event listeners
         hlsPlayer.on(Hls.Events.MEDIA_ATTACHED, function() {
             console.log('HLS.js media attached');
             updateStatus('Media attached, loading stream...');
@@ -205,6 +204,12 @@ function startHlsPlayer(hlsUrl) {
             console.log('Level loaded:', data.details);
             if (data.details.live) {
                 updateStatus('Live stream connected');
+                setTimeout(() => {
+                    const statusEl = document.getElementById('hlsStatus');
+                    if (statusEl) {
+                        statusEl.style.display = 'none';
+                    }
+                }, 3000);
             } else {
                 updateStatus('Playing recorded stream');
             }
@@ -212,9 +217,9 @@ function startHlsPlayer(hlsUrl) {
         
         hlsPlayer.on(Hls.Events.ERROR, function(event, data) {
             console.error('HLS error:', data);
-            updateStatus('Stream error: ' + data.type);
             
             if (data.fatal) {
+                updateStatus('Stream error: ' + data.type);
                 switch(data.type) {
                     case Hls.ErrorTypes.NETWORK_ERROR:
                         console.log('Fatal network error, trying to recover');
@@ -276,15 +281,20 @@ function startHlsPlayer(hlsUrl) {
 
 function roomOpen() {
   login.className = 'hidden'
-  reveal(startAudioButton)
-  hide(stopAudioButton)
-  reveal(startVideoButton)
-  hide(stopVideoButton)
-  reveal(startScreenButton)
-  hide(stopScreenButton)
+  
+  // Only show media controls for non-watchers
+  if (userRole !== 'watcher') {
+    reveal(startAudioButton)
+    hide(stopAudioButton)
+    reveal(startVideoButton)
+    hide(stopVideoButton)
+    reveal(startScreenButton)
+    hide(stopScreenButton)
+    reveal(devicesButton)
+  }
+  
   reveal(exitButton)
   reveal(copyButton)
-  reveal(devicesButton)
   control.className = ''
   reveal(videoMedia)
   
@@ -392,5 +402,26 @@ function enumerateDevices() {
 // Add this event listener to ensure role is applied when DOM is fully loaded
 document.addEventListener('DOMContentLoaded', function() {
     console.log("DOM loaded, user role: " + userRole);
+    
+    // Pre-populate room ID from URL if available
+    const roomIdParam = getUrlParameter('room');
+    if (roomIdParam) {
+        const roomInput = document.getElementById('roomidInput');
+        if (roomInput) {
+            roomInput.value = roomIdParam;
+        }
+    }
+    
+    // Auto-join if both room and role are specified
+    if (roomIdParam && userRole) {
+        const nameInput = document.getElementById('nameInput');
+        const name = nameInput ? nameInput.value : 'user_' + Math.round(Math.random() * 1000);
+        
+        // Small delay to ensure everything is loaded
+        setTimeout(() => {
+            joinRoom(name, roomIdParam);
+        }, 500);
+    }
+    
     setTimeout(setupUIForRole, 100);
 });

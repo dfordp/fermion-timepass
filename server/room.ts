@@ -10,6 +10,10 @@ export default class Room {
   io: Server;
 
   constructor(room_id: string, worker: mediasoup.types.Worker, io: Server) {
+    if (!worker) {
+      throw new Error('MediaSoup worker is undefined');
+    }
+    
     this.id = room_id;
     const mediaCodecs = config.mediasoup.router.mediaCodecs;
     worker
@@ -38,6 +42,18 @@ export default class Room {
       });
     });
     return producerList;
+  }
+
+  getAllProducers(): Map<string, mediasoup.types.Producer> {
+    const allProducers = new Map<string, mediasoup.types.Producer>();
+    
+    this.peers.forEach(peer => {
+      peer.producers.forEach((producer, id) => {
+        allProducers.set(id, producer);
+      });
+    });
+    
+    return allProducers;
   }
 
   getRtpCapabilities(): mediasoup.types.RtpCapabilities {
