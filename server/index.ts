@@ -31,12 +31,6 @@ const hlsManager = new HlsManager(app);
 app.get('/watch/:roomId', (req, res) => {
   const roomId = req.params.roomId;
 
-  // (Optional) check if folder actually exists:
-  const playlistPath = path.join(__dirname, '..', 'public', 'hls', roomId, 'playlist.m3u8');
-  if (!fs.existsSync(playlistPath)) {
-    return res.status(404).send('No live stream for this room yet.');
-  }
-
   // Serve a simple HTML page with HLS.js
   res.send(`
     <!DOCTYPE html>
@@ -58,11 +52,36 @@ app.get('/watch/:roomId', (req, res) => {
           const hlsUrl = '/hls/${roomId}/playlist.m3u8';
 
           if (Hls.isSupported()) {
-            const hls = new Hls();
+            const hls = new Hls({
+              enableWorker: true,
+              lowLatencyMode: true,
+              backBufferLength: 0
+            });
             hls.loadSource(hlsUrl);
             hls.attachMedia(video);
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
               video.play();
+            });
+            
+            // Add error handling
+            hls.on(Hls.Events.ERROR, (event, data) => {
+              console.error('HLS error:', data);
+              if (data.fatal) {
+                switch(data.type) {
+                  case Hls.ErrorTypes.NETWORK_ERROR:
+                    console.log('Fatal network error, trying to recover');
+                    hls.startLoad();
+                    break;
+                  case Hls.ErrorTypes.MEDIA_ERROR:
+                    console.log('Fatal media error, trying to recover');
+                    hls.recoverMediaError();
+                    break;
+                  default:
+                    console.log('Fatal error, cannot recover');
+                    hls.destroy();
+                    break;
+                }
+              }
             });
           } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
             // Safari fallback
@@ -73,6 +92,16 @@ app.get('/watch/:roomId', (req, res) => {
           } else {
             document.body.innerHTML = '<p>Your browser does not support HLS playback.</p>';
           }
+          
+          // Poll for new playlist updates
+          setInterval(() => {
+            fetch(hlsUrl + '?_=' + Date.now())
+              .then(response => {
+                if (!response.ok) throw new Error('Playlist not available');
+                console.log('Playlist check successful');
+              })
+              .catch(error => console.error('Playlist error:', error));
+          }, 5000);
         </script>
       </body>
     </html>
@@ -113,10 +142,13 @@ async function createWorkers(): Promise<void> {
     });
     
     workers.push(worker);
+    console.log(`Created mediasoup worker ${i+1}/${numWorkers} [pid:${worker.pid}]`);
   }
 }
 
 io.on('connection', (socket) => {
+  console.log('New socket connection', socket.id);
+  
   socket.on('createRoom', async ({ room_id }, callback) => {
     if (roomList.has(room_id)) {
       callback('already exists');
@@ -226,22 +258,18 @@ io.on('connection', (socket) => {
       id: producer_id
     });
 
-    // Get all video producers in the room
-    const videoProducers = new Map<string, mediasoup.types.Producer>();
-    room.getPeers().forEach(peer => {
-      peer.producers.forEach((producer, id) => {
-        if (producer.kind === 'video') {
-          videoProducers.set(id, producer);
-        }
-      });
-    });
-
+    // Get all producers in the room
+    const roomProducers = room.getAllProducers();
+    
     // Update HLS stream with all current producers
-    if (videoProducers.size > 0) {
-      const roomProducers = room.getAllProducers(); // Make sure this returns actual producer objects
-      const hlsUrl = await hlsManager.updateRoomStream(socket.room_id, room.router, [...roomProducers.values()]);
-      // Broadcast HLS URL to all clients in the room
-      room.broadCast(socket.id, 'hlsUrl', { url: hlsUrl });
+    if (roomProducers.size > 0) {
+      try {
+        const hlsUrl = await hlsManager.updateRoomStream(socket.room_id, room.router, [...roomProducers.values()]);
+        // Broadcast HLS URL to all clients in the room
+        room.broadCast(socket.id, 'hlsUrl', { url: hlsUrl });
+      } catch (error) {
+        console.error('Failed to update HLS stream:', error);
+      }
     }
 
     callback({ producer_id });
@@ -262,10 +290,24 @@ io.on('connection', (socket) => {
     callback(params);
   });
 
-  socket.on('resume', async (data, callback) => {
-    // This needs to be fixed - consumer is not defined in this scope
-    // await consumer.resume();
-    callback();
+  socket.on('resume', async ({ consumer_id }, callback) => {
+    if (!socket.room_id || !roomList.has(socket.room_id)) return;
+    
+    const room = roomList.get(socket.room_id)!;
+    const peer = room.getPeers().get(socket.id);
+    
+    if (peer) {
+      const consumer = peer.consumers.get(consumer_id);
+      if (consumer) {
+        await consumer.resume();
+        console.log('Resumed consumer', { 
+          consumer_id, 
+          name: peer.name 
+        });
+      }
+    }
+    
+    callback('success');
   });
 
   socket.on('getMyRoomInfo', (_, callback) => {
@@ -286,18 +328,14 @@ io.on('connection', (socket) => {
     // Update HLS stream after peer left
     const room = roomList.get(socket.room_id)!;
     if (room.getPeers().size > 0) {
-      const videoProducers = new Map<string, mediasoup.types.Producer>();
-      room.getPeers().forEach(peer => {
-        peer.producers.forEach((producer, id) => {
-          if (producer.kind === 'video') {
-            videoProducers.set(id, producer);
-          }
-        });
-      });
+      const roomProducers = room.getAllProducers();
       
-      if (videoProducers.size > 0) {
-        const roomProducers = room.getAllProducers(); // Make sure this returns actual producer objects
-        await hlsManager.updateRoomStream(socket.room_id, room.router, [...roomProducers.values()]);
+      if (roomProducers.size > 0) {
+        try {
+          await hlsManager.updateRoomStream(socket.room_id, room.router, [...roomProducers.values()]);
+        } catch (error) {
+          console.error('Failed to update HLS stream after disconnect:', error);
+        }
       } else {
         hlsManager.stopRoomHlsStream(socket.room_id);
       }
@@ -311,54 +349,56 @@ io.on('connection', (socket) => {
     if (!socket.room_id || !roomList.has(socket.room_id)) return;
     
     console.log('Producer close', {
-      name: roomList.get(socket.room_id)?.getPeers().get(socket.id)?.name
+      name: roomList.get(socket.room_id)?.getPeers().get(socket.id)?.name,
+      producer_id
     });
 
     roomList.get(socket.room_id)!.closeProducer(socket.id, producer_id);
+    
+    // Update HLS stream after producer closed
+    const room = roomList.get(socket.room_id)!;
+    const roomProducers = room.getAllProducers();
+    
+    if (roomProducers.size > 0) {
+      try {
+        hlsManager.updateRoomStream(socket.room_id, room.router, [...roomProducers.values()])
+          .catch(error => console.error('Failed to update HLS stream after producer closed:', error));
+      } catch (error) {
+        console.error('Failed to update HLS stream after producer closed:', error);
+      }
+    } else {
+      hlsManager.stopRoomHlsStream(socket.room_id);
+    }
   });
 
-    // Add this socket handler inside the connection event:
-  
-   socket.on('getHlsUrl', (data, callback) => {
+  socket.on('getHlsUrl', (data, callback) => {
     const roomId = data.room_id || socket.room_id;
     console.log(`Client requesting HLS URL for room: ${roomId}`);
     
     if (!roomId || !roomList.has(roomId)) {
-        console.log(`Room ${roomId} not found`);
-        callback({ error: 'Room not found' });
-        return;
+      console.log(`Room ${roomId} not found`);
+      callback({ error: 'Room not found' });
+      return;
     }
     
-    // Get all video producers in the room
+    // Get the room
     const room = roomList.get(roomId)!;
-    const videoProducers = new Map<string, mediasoup.types.Producer>();
-    room.getPeers().forEach(peer => {
-        peer.producers.forEach((producer, id) => {
-            if (producer.kind === 'video') {
-                videoProducers.set(id, producer);
-            }
-        });
-    });
+    const roomProducers = room.getAllProducers();
     
-    // If there are no video producers yet, just return the URL
-    // the stream will start when a producer joins
-    const hlsUrl = hlsManager.getHlsUrl(roomId);
-      console.log(`Returning HLS URL for room ${roomId}: ${hlsUrl}`);
-      
-      // If we have video producers but no active stream yet, start one
-      if (videoProducers.size > 0 && !hlsManager.isStreamActive(roomId)) {
-          console.log(`Starting HLS stream for room ${roomId} with ${videoProducers.size} video producers`);
-          hlsManager.createRoomHlsStream(roomId, room.router, room.getAllProducers())
-              .then(newHlsUrl => {
-                  callback({ url: newHlsUrl });
-              })
-              .catch(err => {
-                  console.error(`Error starting HLS stream: ${err}`);
-                  callback({ url: hlsUrl });
-              });
-      } else {
-          callback({ url: hlsUrl });
-      }
+    // If we have producers but no active stream yet, start one
+    if (roomProducers.size > 0 && !hlsManager.isStreamActive(roomId)) {
+      console.log(`Starting HLS stream for room ${roomId} with ${roomProducers.size} producers`);
+      hlsManager.updateRoomStream(roomId, room.router, [...roomProducers.values()])
+        .then(newHlsUrl => {
+          callback({ url: newHlsUrl });
+        })
+        .catch(err => {
+          console.error(`Error starting HLS stream: ${err}`);
+          callback({ url: hlsManager.getHlsUrl(roomId), error: err.message });
+        });
+    } else {
+      callback({ url: hlsManager.getHlsUrl(roomId) });
+    }
   });
 
   socket.on('exitRoom', async (_, callback) => {
@@ -381,18 +421,14 @@ io.on('connection', (socket) => {
       const room = roomList.get(socket.room_id)!;
       if (room.getPeers().size > 0) {
         // Update stream with remaining peers
-        const videoProducers = new Map<string, mediasoup.types.Producer>();
-        room.getPeers().forEach(peer => {
-          peer.producers.forEach((producer, id) => {
-            if (producer.kind === 'video') {
-              videoProducers.set(id, producer);
-            }
-          });
-        });
+        const roomProducers = room.getAllProducers();
         
-        if (videoProducers.size > 0) {
-          const roomProducers = room.getAllProducers(); // Make sure this returns actual producer objects
-          await hlsManager.updateRoomStream(socket.room_id, room.router, [...roomProducers.values()]);
+        if (roomProducers.size > 0) {
+          try {
+            await hlsManager.updateRoomStream(socket.room_id, room.router, [...roomProducers.values()]);
+          } catch (error) {
+            console.error('Failed to update HLS stream after exit:', error);
+          }
         } else {
           hlsManager.stopRoomHlsStream(socket.room_id);
         }
