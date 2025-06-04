@@ -8,6 +8,7 @@ function getUrlParameter(name) {
 
 // Get the user role from URL parameter
 const userRole = getUrlParameter('role');
+let hlsPlayer = null;
 
 // Function to handle UI based on user role
 function setupUIForRole() {
@@ -27,7 +28,29 @@ function setupUIForRole() {
             }
         });
         
-        console.log("Watcher mode enabled - media controls hidden");
+        // Create HLS player container
+        const hlsContainer = document.createElement('div');
+        hlsContainer.id = 'hlsPlayerContainer';
+        hlsContainer.className = 'hls-container';
+        
+        const hlsHeader = document.createElement('h4');
+        hlsHeader.innerHTML = '<i class="fab fa-youtube"></i> Live Stream';
+        
+        const hlsVideo = document.createElement('video');
+        hlsVideo.id = 'hlsVideo';
+        hlsVideo.className = 'vid';
+        hlsVideo.controls = true;
+        hlsVideo.autoplay = true;
+        hlsVideo.playsInline = true;
+        
+        hlsContainer.appendChild(hlsHeader);
+        hlsContainer.appendChild(hlsVideo);
+        
+        // Add the HLS container to the page
+        const videoMedia = document.getElementById('videoMedia');
+        videoMedia.insertBefore(hlsContainer, videoMedia.firstChild);
+        
+        console.log("Watcher mode enabled - media controls hidden, HLS player added");
     } else if (userRole === 'streamer') {
         console.log("Streamer mode enabled - full controls available");
     }
@@ -56,18 +79,199 @@ socket.request = function request(type, data = {}) {
 let rc = null
 
 function joinRoom(name, room_id) {
-  if (rc && rc.isOpen()) {
-    console.log('Already connected to a room')
-  } else {
-    initEnumerateDevices()
+    if (rc && rc.isOpen()) {
+        console.log('Already connected to a room');
+    } else {
+        // Only initialize devices for non-watchers to avoid permission prompts
+        if (userRole !== 'watcher') {
+            initEnumerateDevices();
+        }
+        
+        // Create room client - for watchers, we still need to join the room to get the HLS URL
+        rc = new RoomClient(localMedia, remoteVideos, remoteAudios, window.mediasoupClient, socket, room_id, name, roomOpen);
+        
+        addListeners();
+        
+        // Apply role after joining room
+        setTimeout(setupUIForRole, 500);
+        
+        // Listen for HLS URL from the server
+        socket.on('hlsUrl', (data) => {
+            console.log('Received HLS URL event:', data);
+            if (userRole === 'watcher' && data.url) {
+                startHlsPlayer(data.url);
+            }
+        });
+        
+        // For watchers, also manually request the HLS URL after joining
+        if (userRole === 'watcher') {
+            console.log('Watcher joining, will request HLS URL');
+            
+            // Ask for HLS URL 2 seconds after joining
+            setTimeout(() => {
+                console.log('Requesting HLS URL for room:', room_id);
+                socket.emit('getHlsUrl', { room_id }, (response) => {
+                    console.log('HLS URL response:', response);
+                    if (response && response.url) {
+                        startHlsPlayer(response.url);
+                    } else {
+                        console.error('No HLS URL in response:', response);
+                        const statusEl = document.getElementById('hlsStatus');
+                        if (statusEl) {
+                            statusEl.textContent = 'Stream not available yet. Please wait...';
+                        }
+                    }
+                });
+            }, 2000);
+        }
+    }
+}
 
-    rc = new RoomClient(localMedia, remoteVideos, remoteAudios, window.mediasoupClient, socket, room_id, name, roomOpen)
-
-    addListeners()
+// Function to start the HLS player
+function startHlsPlayer(hlsUrl) {
+    console.log('Starting HLS player with URL:', hlsUrl);
     
-    // Apply role after joining room
-    setTimeout(setupUIForRole, 500); // Add a small delay to ensure DOM is updated
-  }
+    // Check if HLS container exists, if not create it
+    let videoElement = document.getElementById('hlsVideo');
+    if (!videoElement) {
+        console.log('Creating new HLS video element');
+        setupUIForRole(); // Recreate the UI to ensure video element exists
+        videoElement = document.getElementById('hlsVideo');
+    }
+    
+    if (!videoElement) {
+        console.error('Failed to create or find HLS video element');
+        return;
+    }
+    
+    // Clean up existing player if any
+    if (hlsPlayer) {
+        console.log('Destroying existing HLS player');
+        hlsPlayer.destroy();
+        hlsPlayer = null;
+    }
+    
+    // Check if URL is valid
+    if (!hlsUrl || !hlsUrl.includes('.m3u8')) {
+        console.error('Invalid HLS URL:', hlsUrl);
+        return;
+    }
+    
+    // Add status message
+    const statusDiv = document.createElement('div');
+    statusDiv.id = 'hlsStatus';
+    statusDiv.style.padding = '10px';
+    statusDiv.style.backgroundColor = '#f8f9fa';
+    statusDiv.style.borderRadius = '4px';
+    statusDiv.style.margin = '10px 0';
+    statusDiv.textContent = 'Connecting to stream...';
+    
+    const hlsContainer = document.getElementById('hlsPlayerContainer');
+    if (hlsContainer) {
+        const existingStatus = document.getElementById('hlsStatus');
+        if (existingStatus) {
+            existingStatus.textContent = 'Connecting to stream...';
+        } else {
+            hlsContainer.appendChild(statusDiv);
+        }
+    }
+    
+    console.log('Initializing HLS.js with URL:', hlsUrl);
+    
+    if (Hls.isSupported()) {
+        hlsPlayer = new Hls({
+            debug: true, // Enable debug to see what's happening
+            enableWorker: true,
+            lowLatencyMode: true,
+            backBufferLength: 90
+        });
+        
+        // Add event listeners for debugging
+        hlsPlayer.on(Hls.Events.MEDIA_ATTACHED, function() {
+            console.log('HLS.js media attached');
+            updateStatus('Media attached, loading stream...');
+        });
+        
+        hlsPlayer.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
+            console.log('HLS manifest parsed, found ' + data.levels.length + ' quality levels');
+            updateStatus('Stream loaded, playing...');
+            videoElement.play().catch(e => {
+                console.error('Failed to play:', e);
+                updateStatus('Error playing stream: ' + e.message);
+            });
+        });
+        
+        hlsPlayer.on(Hls.Events.LEVEL_LOADED, function(event, data) {
+            console.log('Level loaded:', data.details);
+            if (data.details.live) {
+                updateStatus('Live stream connected');
+            } else {
+                updateStatus('Playing recorded stream');
+            }
+        });
+        
+        hlsPlayer.on(Hls.Events.ERROR, function(event, data) {
+            console.error('HLS error:', data);
+            updateStatus('Stream error: ' + data.type);
+            
+            if (data.fatal) {
+                switch(data.type) {
+                    case Hls.ErrorTypes.NETWORK_ERROR:
+                        console.log('Fatal network error, trying to recover');
+                        updateStatus('Network error, reconnecting...');
+                        hlsPlayer.startLoad();
+                        break;
+                    case Hls.ErrorTypes.MEDIA_ERROR:
+                        console.log('Fatal media error, trying to recover');
+                        updateStatus('Media error, recovering...');
+                        hlsPlayer.recoverMediaError();
+                        break;
+                    default:
+                        console.error('Fatal error, cannot recover');
+                        updateStatus('Fatal error: ' + data.details);
+                        hlsPlayer.destroy();
+                        // Try to reinitialize after a delay
+                        setTimeout(() => startHlsPlayer(hlsUrl), 5000);
+                        break;
+                }
+            }
+        });
+        
+        // Try loading the stream
+        try {
+            hlsPlayer.loadSource(hlsUrl);
+            hlsPlayer.attachMedia(videoElement);
+        } catch (e) {
+            console.error('Error initializing HLS player:', e);
+            updateStatus('Failed to initialize player: ' + e.message);
+        }
+    } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+        // For Safari
+        videoElement.src = hlsUrl;
+        videoElement.addEventListener('loadedmetadata', function() {
+            updateStatus('Stream loaded, playing...');
+            videoElement.play().catch(e => {
+                console.error('Failed to play:', e);
+                updateStatus('Error playing stream: ' + e.message);
+            });
+        });
+        
+        videoElement.addEventListener('error', function(e) {
+            console.error('Video element error:', e);
+            updateStatus('Video error: ' + (videoElement.error ? videoElement.error.message : 'unknown'));
+        });
+    } else {
+        console.error('HLS is not supported in this browser');
+        updateStatus('Your browser does not support HLS playback.');
+    }
+    
+    function updateStatus(message) {
+        console.log('HLS Status:', message);
+        const statusEl = document.getElementById('hlsStatus');
+        if (statusEl) {
+            statusEl.textContent = message;
+        }
+    }
 }
 
 function roomOpen() {
@@ -131,6 +335,12 @@ function addListeners() {
     hide(copyButton)
     hide(devicesButton)
     reveal(login)
+    
+    // Clean up HLS player if it exists
+    if (hlsPlayer) {
+      hlsPlayer.destroy();
+      hlsPlayer = null;
+    }
   })
 }
 
